@@ -79,3 +79,11 @@ export interface UserProfile extends User {
   reviewCount: number;
   createdAt: string;
 }
+
+export interface Conversation {
+  id: string;
+  otherUser: User;
+  job: { id: string; title: string } | null;
+  lastMessage: Message;
+  unreadCount: number;
+}
