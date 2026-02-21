@@ -52,19 +52,35 @@ router.post("/jobs/:jobId/apply", authenticate, async (req: AuthRequest, res: Re
   }
 });
 
-// Get applications for a job
+// Get applications for a job (paginated)
 router.get("/jobs/:jobId/applications", authenticate, async (req: AuthRequest, res: Response) => {
   try {
     const jobId = req.params.jobId as string;
-    const applications = await prisma.application.findMany({
-      where: { jobId },
-      include: {
-        freelancer: { select: { id: true, username: true, avatarUrl: true, bio: true } },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 10));
+    const skip = (page - 1) * limit;
 
-    res.json(applications);
+    const where = { jobId };
+
+    const [applications, total] = await Promise.all([
+      prisma.application.findMany({
+        where,
+        include: {
+          freelancer: { select: { id: true, username: true, avatarUrl: true, bio: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.application.count({ where }),
+    ]);
+
+    res.json({
+      data: applications,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    });
   } catch (error) {
     console.error("Get applications error:", error);
     res.status(500).json({ error: "Internal server error." });
