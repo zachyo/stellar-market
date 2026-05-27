@@ -1,4 +1,5 @@
 import { Metadata } from "next";
+import { generateJobMetadata } from "@/components/SEOMetadata";
 import JobDetailClient from "./JobDetailClient";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
@@ -29,22 +30,12 @@ export async function generateMetadata({
     };
   }
 
-  const desc = job.description?.substring(0, 160) || "Check out this job on StellarMarket";
-
-  return {
-    title: `${job.title} | StellarMarket`,
-    description: desc,
-    openGraph: {
-      title: job.title,
-      description: desc,
-      images: [{ url: job.imageUrl || "/og-default.png" }],
-    },
-    twitter: {
-      card: "summary_large_image",
-      title: job.title,
-      description: desc,
-    },
-  };
+  return generateJobMetadata({
+    title: job.title,
+    description: job.description || "Check out this job on StellarMarket",
+    budget: job.budget || 0,
+    id: params.id,
+  });
 }
 
 export default function JobDetailPage() {

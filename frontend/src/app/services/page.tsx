@@ -6,7 +6,7 @@ import Link from "next/link";
 import axios from "axios";
 import ServiceCard from "@/components/ServiceCard";
 import EmptyState from "@/components/EmptyState";
-import { useServiceFilters } from "@/hooks/useServiceFilters";
+import { useURLStateManager } from "@/components/URLStateManager";
 import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 import { ServiceListing, PaginatedResponse } from "@/types";
 
@@ -48,15 +48,13 @@ const SORT_OPTIONS = [
 ];
 
 function ServicesContent() {
-  const {
-    filters,
-    debouncedSearch,
-    updateFilter,
-    updateSearch,
-    toggleSkill,
-    clearAll,
-    activeCount,
-  } = useServiceFilters();
+  const { filters, updateFilters, clearFilters } = useURLStateManager({
+    category: 'All',
+    search: '',
+    minPrice: undefined,
+    maxPrice: undefined,
+    sortBy: 'newest'
+  });
 
   const [services, setServices] = useState<ServiceListing[]>([]);
   const [total, setTotal] = useState(0);
@@ -65,6 +63,9 @@ function ServicesContent() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [skills, setSkills] = useState<string[]>([]);
+
+  const activeCount = Object.values(filters).filter(v => v && v !== 'All' && v !== 'newest').length + skills.length;
 
   const filterKey = JSON.stringify({
     debouncedSearch,
