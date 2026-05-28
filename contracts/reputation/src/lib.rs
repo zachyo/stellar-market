@@ -45,6 +45,7 @@ mod escrow {
         pub freelancer: Address,
         pub token: Address,
         pub total_amount: i128,
+        pub funded_amount: i128,
         pub status: JobStatus,
         pub milestones: Vec<Milestone>,
         pub job_deadline: u64,
@@ -465,6 +466,11 @@ impl ReputationContract {
             1u64
         };
 
+        // Capture the old tier before mutating reputation so the tier_up event
+        // can carry both the previous and new tier values.
+        let old_avg_rating = Self::get_average_rating(env.clone(), reviewee.clone()).unwrap_or(0);
+        let old_tier = calculate_tier(old_avg_rating);
+
         // Update user reputation
         let rep_key = DataKey::Reputation(reviewee.clone());
         let mut reputation: UserReputation =
@@ -541,6 +547,13 @@ impl ReputationContract {
             env.events().publish(
                 (symbol_short!("reput"), symbol_short!("badge")),
                 (reviewee.clone(), new_tier),
+            );
+
+            // Emit tier upgrade event so indexers/backends have a dedicated
+            // signal without needing to parse badge events.
+            env.events().publish(
+                (symbol_short!("reput"), symbol_short!("tier_up")),
+                (reviewee.clone(), old_tier, new_tier),
             );
         }
 
@@ -1591,6 +1604,9 @@ impl ReputationContract {
         Ok(appeal)
     }
 }
+
+#[cfg(test)]
+mod test;
 
 #[cfg(test)]
 mod tests {
