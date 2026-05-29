@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { Loader2, Plus, Trash2, X } from "lucide-react";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 
 export type ProposeRevisionMilestoneInput = {
   title: string;
@@ -78,6 +79,10 @@ export default function ProposeRevisionModal({
   currentMilestones = [],
   processing,
 }: Props) {
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(modalRef, { open: isOpen, onClose });
+
   const [rows, setRows] = useState<Row[]>([]);
 
   useEffect(() => {
@@ -147,7 +152,7 @@ export default function ProposeRevisionModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-      <div className="bg-theme-bg border border-theme-border rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+      <div ref={modalRef} className="bg-theme-bg border border-theme-border rounded-xl shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-4 border-b border-theme-border">
           <h2 className="text-lg font-semibold text-theme-heading">
             Propose revision
@@ -157,6 +162,7 @@ export default function ProposeRevisionModal({
             onClick={onClose}
             className="p-1 rounded-lg text-theme-text hover:bg-theme-border/30"
             disabled={processing}
+            aria-label="Close propose revision modal"
           >
             <X size={20} />
           </button>
@@ -279,6 +285,7 @@ export default function ProposeRevisionModal({
                       }
                       className="text-theme-error hover:opacity-80 p-1"
                       disabled={processing}
+                      aria-label={`Remove milestone ${idx + 1}`}
                     >
                       <Trash2 size={16} />
                     </button>
@@ -287,6 +294,7 @@ export default function ProposeRevisionModal({
                 <input
                   type="text"
                   placeholder="Title"
+                  aria-label={`Milestone ${idx + 1} title`}
                   className="w-full border border-theme-border rounded px-2 py-1.5 text-sm bg-theme-bg text-theme-text"
                   value={r.title}
                   onChange={(e) =>
@@ -304,6 +312,7 @@ export default function ProposeRevisionModal({
                     min={0}
                     step="0.0000001"
                     placeholder="XLM"
+                    aria-label={`Milestone ${idx + 1} amount in XLM`}
                     className="flex-1 border border-theme-border rounded px-2 py-1.5 text-sm bg-theme-bg text-theme-text"
                     value={r.amount}
                     onChange={(e) =>
@@ -317,6 +326,7 @@ export default function ProposeRevisionModal({
                   />
                   <input
                     type="date"
+                    aria-label={`Milestone ${idx + 1} deadline`}
                     className="flex-1 border border-theme-border rounded px-2 py-1.5 text-sm bg-theme-bg text-theme-text"
                     value={r.deadline}
                     onChange={(e) =>

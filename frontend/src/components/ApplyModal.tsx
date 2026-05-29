@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { X, Loader2, AlertCircle } from "lucide-react";
 import dynamic from "next/dynamic";
 import axios from "axios";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/components/Toast";
+import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { Job } from "@/types";
 
 const MDEditor = dynamic(() => import("@uiw/react-md-editor"), { ssr: false });
@@ -38,6 +39,9 @@ export default function ApplyModal({
 }: ApplyModalProps) {
   const { token } = useAuth();
   const { toast } = useToast();
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  useFocusTrap(modalRef, { open: isOpen, onClose });
 
   const [proposal, setProposal] = useState("");
   const [bidAmount, setBidAmount] = useState(job.budget);
@@ -145,24 +149,27 @@ export default function ApplyModal({
           if (!submitting) onClose();
         }}
       />
-      <div className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-dark-card border border-dark-border rounded-xl p-6 mx-4">
+      <div
+        ref={modalRef}
+        className="relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-6 mx-4"
+      >
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold text-dark-heading">
+          <h2 className="text-xl font-bold text-[var(--text-heading)]">
             Apply for this Job
           </h2>
           <button
             onClick={() => {
               if (!submitting) onClose();
             }}
-            className="text-dark-text hover:text-dark-heading transition-colors"
-            aria-label="Close"
+            className="text-[var(--text-body)] hover:text-[var(--text-heading)] transition-colors"
+            aria-label="Close apply modal"
             disabled={submitting}
           >
             <X size={20} />
           </button>
         </div>
 
-        <p className="text-sm text-dark-text mb-6">
+        <p className="text-sm text-[var(--text-body)] mb-6">
           {job.title} &mdash; {job.budget.toLocaleString()} XLM
         </p>
 
@@ -175,10 +182,10 @@ export default function ApplyModal({
 
         <div className="space-y-5">
           <div>
-            <label className="block text-sm font-medium text-dark-heading mb-2">
+            <label className="block text-sm font-medium text-[var(--text-heading)] mb-2">
               Cover Letter
             </label>
-            <div data-color-mode="dark">
+            <div data-color-mode="dark" role="textbox" aria-multiline="true" aria-label="Cover letter editor">
               <MDEditor
                 value={proposal}
                 onChange={(val) => setProposal(val || "")}
@@ -192,7 +199,7 @@ export default function ApplyModal({
                   {validationErrors.proposal}
                 </span>
               ) : (
-                <span className="text-xs text-dark-text">
+                <span className="text-xs text-[var(--text-body)]">
                   {MIN_PROPOSAL_LENGTH}–{MAX_PROPOSAL_LENGTH} characters
                 </span>
               )}
@@ -210,13 +217,13 @@ export default function ApplyModal({
 
           <div>
             <label
-              htmlFor="bidAmount"
-              className="block text-sm font-medium text-dark-heading mb-2"
+              htmlFor="apply-bid-amount"
+              className="block text-sm font-medium text-[var(--text-heading)] mb-2"
             >
               Proposed Budget (XLM)
             </label>
             <input
-              id="bidAmount"
+              id="apply-bid-amount"
               type="number"
               min="1"
               step="any"
@@ -233,13 +240,13 @@ export default function ApplyModal({
 
           <div>
             <label
-              htmlFor="timeline"
-              className="block text-sm font-medium text-dark-heading mb-2"
+              htmlFor="apply-timeline"
+              className="block text-sm font-medium text-[var(--text-heading)] mb-2"
             >
               Estimated Timeline
             </label>
             <select
-              id="timeline"
+              id="apply-timeline"
               className="input-field"
               value={selectedTimeline}
               onChange={(e) => setSelectedTimeline(e.target.value)}
@@ -252,6 +259,7 @@ export default function ApplyModal({
             </select>
             {selectedTimeline === "Custom" && (
               <input
+                id="apply-custom-days"
                 type="number"
                 min="1"
                 placeholder="Number of days"
@@ -270,7 +278,7 @@ export default function ApplyModal({
           </div>
         </div>
 
-        <div className="flex items-center gap-3 mt-6 pt-4 border-t border-dark-border">
+        <div className="flex items-center gap-3 mt-6 pt-4 border-t border-[var(--border)]">
           <button
             onClick={() => {
               if (!submitting) onClose();

@@ -97,6 +97,9 @@ export default function NotificationBell() {
                     </span>
                 </span>
             )}
+            <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                {unreadCount > 0 ? `${unreadCount} unread notifications` : "No unread notifications"}
+            </span>
         </Link>
     );
 }

@@ -130,7 +130,7 @@ export default function DisputeVoteProgress({
       </div>
 
       {/* Status Message */}
-      <div className="text-center">
+      <div className="text-center" aria-live="polite" aria-atomic="true">
         {totalVotes >= dispute.minVotes ? (
           <p className="text-sm text-theme-success font-medium flex items-center justify-center gap-2">
             <ShieldCheck size={16} />

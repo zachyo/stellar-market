@@ -178,7 +178,7 @@ export default function AuthForm({ type }: AuthFormProps) {
 
         <form onSubmit={handleTwoFactorSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-dark-text mb-1">
+            <label htmlFor="auth-2fa-code" className="block text-sm font-medium text-dark-text mb-1">
               Verification Code
             </label>
             <div className="relative">
@@ -187,6 +187,7 @@ export default function AuthForm({ type }: AuthFormProps) {
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-muted"
               />
               <input
+                id="auth-2fa-code"
                 type="text"
                 required
                 value={totpCode}
@@ -248,7 +249,7 @@ export default function AuthForm({ type }: AuthFormProps) {
         {type === "register" && (
           <>
             <div>
-              <label className="block text-sm font-medium text-theme-text mb-1">
+              <label htmlFor="auth-username" className="block text-sm font-medium text-theme-text mb-1">
                 Username
               </label>
               <div className="relative">
@@ -257,6 +258,7 @@ export default function AuthForm({ type }: AuthFormProps) {
                   className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text"
                 />
                 <input
+                  id="auth-username"
                   type="text"
                   name="username"
                   required
@@ -269,10 +271,11 @@ export default function AuthForm({ type }: AuthFormProps) {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-theme-text mb-1">
+              <label htmlFor="auth-role" className="block text-sm font-medium text-theme-text mb-1">
                 Role
               </label>
               <select
+                id="auth-role"
                 name="role"
                 value={formData.role}
                 onChange={handleChange}
@@ -284,7 +287,7 @@ export default function AuthForm({ type }: AuthFormProps) {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-theme-text mb-1">
+              <label htmlFor="auth-wallet" className="block text-sm font-medium text-theme-text mb-1">
                 Wallet Address
               </label>
               <div className="flex gap-2">
@@ -294,6 +297,7 @@ export default function AuthForm({ type }: AuthFormProps) {
                     className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text"
                   />
                   <input
+                    id="auth-wallet"
                     type="text"
                     readOnly
                     value={address || ""}
@@ -361,6 +365,7 @@ export default function AuthForm({ type }: AuthFormProps) {
                       className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text"
                     />
                     <input
+                      id="auth-referral"
                       type="text"
                       name="referralCode"
                       value={formData.referralCode}
@@ -376,7 +381,7 @@ export default function AuthForm({ type }: AuthFormProps) {
         )}
 
         <div>
-          <label className="block text-sm font-medium text-theme-text mb-1">
+          <label htmlFor="auth-email" className="block text-sm font-medium text-theme-text mb-1">
             Email Address
           </label>
           <div className="relative">
@@ -385,6 +390,7 @@ export default function AuthForm({ type }: AuthFormProps) {
               className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text"
             />
             <input
+              id="auth-email"
               type="email"
               name="email"
               required
@@ -397,7 +403,7 @@ export default function AuthForm({ type }: AuthFormProps) {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-theme-text mb-1">
+          <label htmlFor="auth-password" className="block text-sm font-medium text-theme-text mb-1">
             Password
           </label>
           <div className="relative">
@@ -406,6 +412,7 @@ export default function AuthForm({ type }: AuthFormProps) {
               className="absolute left-3 top-1/2 -translate-y-1/2 text-theme-text"
             />
             <input
+              id="auth-password"
               type="password"
               name="password"
               required
