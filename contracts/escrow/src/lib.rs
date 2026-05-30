@@ -123,6 +123,8 @@ pub enum DisputeResolution {
     RefundBoth,
     RefundSplit(u32),
     Escalate,
+    /// Dispute was filed in bad faith; initiator's full stake is sent to treasury.
+    MaliciousFiling,
 }
 
 #[contracttype]
@@ -924,6 +926,20 @@ impl EscrowContract {
                     // No funds transferred; job remains in its current disputed state
                     // until a higher-level resolution process completes.
                 }
+                DisputeResolution::MaliciousFiling => {
+                    // Slash full remaining stake to treasury.
+                    let treasury: Address = env
+                        .storage()
+                        .instance()
+                        .get(&symbol_short!("TRE"))
+                        .unwrap_or(job.client.clone());
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &treasury,
+                        &remaining,
+                    );
+                    job.status = JobStatus::Cancelled;
+                }
             }
         } else {
             // All milestones were already paid out — only the job status needs updating.
@@ -931,7 +947,8 @@ impl EscrowContract {
             match resolution {
                 DisputeResolution::ClientWins
                 | DisputeResolution::RefundBoth
-                | DisputeResolution::RefundSplit(_) => {
+                | DisputeResolution::RefundSplit(_)
+                | DisputeResolution::MaliciousFiling => {
                     job.status = JobStatus::Cancelled;
                 }
                 DisputeResolution::FreelancerWins => {

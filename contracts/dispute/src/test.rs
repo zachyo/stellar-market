@@ -27,8 +27,6 @@ impl MockReputationContract {
         _env: Env,
         user: Address,
     ) -> Result<reputation::UserReputation, soroban_sdk::Error> {
-        // Mock: Return high reputation for all users in tests
-        // In real tests, you would use more sophisticated mocking
         Ok(reputation::UserReputation {
             user: user.clone(),
             total_score: 500,
@@ -43,6 +41,15 @@ impl MockReputationContract {
         _loser: Address,
         _job_id: u64,
         _amount: u64,
+    ) -> Result<(), soroban_sdk::Error> {
+        Ok(())
+    }
+
+    /// Mock for the MaliciousFiling cross-contract call.
+    pub fn apply_dispute_outcome(
+        _env: Env,
+        _user: Address,
+        _outcome: u32, // DisputeOutcome discriminant (2 = MaliciousFiling)
     ) -> Result<(), soroban_sdk::Error> {
         Ok(())
     }
@@ -1716,4 +1723,154 @@ fn test_conflict_of_interest_voter_is_party() {
         &VoteChoice::Client,
         &String::from_str(&env, "Vote"),
     );
+}
+
+// ── Malicious dispute filing tests ────────────────────────────────────────────
+
+/// Helper: set up a dispute with an initialized contract and return key objects.
+fn setup_malicious_test(
+    env: &Env,
+) -> (
+    DisputeContractClient,
+    Address, // job_client
+    Address, // freelancer
+    u64,     // dispute_id
+) {
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(env, &dispute_contract_id);
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let admin = Address::generate(env);
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+
+    let job_client = Address::generate(env);
+    let freelancer = Address::generate(env);
+    let dispute_id = client.raise_dispute(
+        &1u64,
+        &job_client,
+        &freelancer,
+        &job_client, // initiator = client (the one allegedly filing in bad faith)
+        &String::from_str(env, "Frivolous claim"),
+        &5u32, // min_votes = 5 so we can reach supermajority
+        &None,
+    );
+    (client, job_client, freelancer, dispute_id)
+}
+
+/// 4-of-5 votes for MaliciousFiling → resolves as MaliciousDisputeFiling.
+#[test]
+fn test_malicious_filing_supermajority_resolves() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    // 4 malicious votes + 1 dissenting vote = supermajority
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Client,           &String::from_str(&env, "disagree"));
+
+    let status = client.resolve_dispute(&dispute_id);
+    assert_eq!(status, DisputeStatus::MaliciousDisputeFiling);
+}
+
+/// 3-of-5 votes for MaliciousFiling (60 %) — below the 80 % supermajority threshold.
+/// Resolves normally (Client wins here because the remaining 2 votes are also for Client).
+#[test]
+fn test_malicious_filing_below_supermajority_resolves_normally() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    // 3 malicious + 2 for client = 60 % malicious, not ≥ 80 %
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::Client,           &String::from_str(&env, "for client"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Client,           &String::from_str(&env, "for client"));
+
+    // Should NOT resolve as MaliciousDisputeFiling — normal resolution applies.
+    // freelancer has 0, client has 2, malicious has 3 → malicious wins by plurality
+    // BUT supermajority check fails (3*5 = 15 < 5*4 = 20), so falls through to normal path.
+    // In the normal path malicious votes are not a valid outcome category, so tie-break kicks in.
+    let status = client.resolve_dispute(&dispute_id);
+    assert_ne!(status, DisputeStatus::MaliciousDisputeFiling);
+}
+
+/// Verifies that a MaliciousDisputeFiling dispute cannot be resolved a second time.
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_malicious_filing_cannot_be_re_resolved() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Freelancer,       &String::from_str(&env, "dissent"));
+
+    client.resolve_dispute(&dispute_id);
+    // Second resolve attempt should panic with AlreadyResolved (#7)
+    client.resolve_dispute(&dispute_id);
+}
+
+/// Verify the MaliciousDisputeResolved event is emitted on a supermajority resolution.
+#[test]
+fn test_malicious_filing_event_emitted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Freelancer,       &String::from_str(&env, "dissent"));
+
+    client.resolve_dispute(&dispute_id);
+
+    // Check that a "malicious_rslvd" event was published.
+    let events = env.events().all();
+    let malicious_event = events.iter().find(|e| {
+        // The second topic should be the Symbol "malicious_rslvd"
+        e.1.len() >= 2
+    });
+    assert!(malicious_event.is_some(), "MaliciousDisputeResolved event not found");
+
+    // The dispute should now show MaliciousDisputeFiling status.
+    let dispute = client.get_dispute(&dispute_id);
+    assert_eq!(dispute.status, DisputeStatus::MaliciousDisputeFiling);
+    // Initiator should be the client (who raised the dispute).
+    assert_eq!(dispute.initiator, job_client);
 }

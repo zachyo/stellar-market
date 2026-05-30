@@ -52,6 +52,8 @@ pub enum DisputeStatus {
     RefundedBoth,
     RefundSplit(u32),
     Escalated,
+    /// Filing was determined to be in bad faith by a 4/5 supermajority of arbitrators.
+    MaliciousDisputeFiling,
 }
 
 #[contracttype]
@@ -71,6 +73,8 @@ pub enum DisputeResolution {
     RefundBoth,
     RefundSplit(u32),
     Escalate,
+    /// Dispute was filed in bad faith; initiator stake is slashed to treasury and reputation penalised.
+    MaliciousFiling,
 }
 
 #[contracttype]
@@ -79,6 +83,8 @@ pub enum VoteChoice {
     Client,
     Freelancer,
     RefundSplit(u32),
+    /// Vote that the dispute initiator filed in bad faith.
+    MaliciousFiling,
 }
 
 #[contracttype]
@@ -104,6 +110,8 @@ pub struct Dispute {
     pub votes_for_freelancer: u32,
     pub votes_for_refund_split: u32,
     pub refund_split_sum: u64,
+    /// Votes that the filing was malicious (bad-faith). Requires 4/5 supermajority to trigger.
+    pub votes_for_malicious: u32,
     pub min_votes: u32,
     pub tie_break_method: TieBreakMethod,
     pub created_at: u64,
@@ -633,6 +641,7 @@ impl DisputeContract {
             votes_for_freelancer: 0,
             votes_for_refund_split: 0,
             refund_split_sum: 0,
+            votes_for_malicious: 0,
             min_votes: if min_votes < 3 { 3 } else { min_votes },
             tie_break_method: tie_break_method.unwrap_or(TieBreakMethod::RefundBoth),
             created_at: env.ledger().timestamp(),
@@ -771,6 +780,7 @@ impl DisputeContract {
                 dispute.refund_split_sum =
                     dispute.refund_split_sum.saturating_add(pct_client as u64);
             }
+            VoteChoice::MaliciousFiling => dispute.votes_for_malicious += 1,
         }
 
         dispute.status = DisputeStatus::Voting;
@@ -1134,26 +1144,109 @@ fn internal_resolve(
         || dispute.status == DisputeStatus::RefundedBoth
         || matches!(dispute.status, DisputeStatus::RefundSplit(_))
         || dispute.status == DisputeStatus::Escalated
+        || dispute.status == DisputeStatus::MaliciousDisputeFiling
     {
         return Err(DisputeError::AlreadyResolved);
     }
 
-    let total_votes =
-        dispute.votes_for_client + dispute.votes_for_freelancer + dispute.votes_for_refund_split;
+    let total_votes = dispute.votes_for_client
+        + dispute.votes_for_freelancer
+        + dispute.votes_for_refund_split
+        + dispute.votes_for_malicious;
     if !force && total_votes < dispute.min_votes {
         return Err(DisputeError::NotEnoughVotes);
     }
 
+    // ── Supermajority check: MaliciousFiling requires 4 out of every 5 votes ─────
+    // votes_for_malicious * 5 >= total_votes * 4  ↔  ≥ 80 % of all votes
+    let is_malicious_supermajority = total_votes >= 5
+        && dispute.votes_for_malicious.saturating_mul(5) >= total_votes.saturating_mul(4);
+
+    if is_malicious_supermajority {
+        dispute.status = DisputeStatus::MaliciousDisputeFiling;
+
+        // Notify escrow: slash full stake of initiator to treasury.
+        env.invoke_contract::<()>(
+            escrow_addr,
+            &Symbol::new(env, "resolve_dispute_callback"),
+            vec![
+                env,
+                dispute.job_id.into_val(env),
+                DisputeResolution::MaliciousFiling.into_val(env),
+            ],
+        );
+
+        // Cross-contract call to reputation contract: apply MaliciousFiling penalty.
+        if let Some(reputation_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ReputationContract)
+        {
+            // Import DisputeOutcome inline so we can pass it to the reputation contract.
+            mod reputation_types {
+                use soroban_sdk::contracttype;
+                #[contracttype]
+                #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+                #[repr(u32)]
+                pub enum DisputeOutcome {
+                    Won = 0,
+                    Lost = 1,
+                    MaliciousFiling = 2,
+                }
+            }
+
+            let outcome = reputation_types::DisputeOutcome::MaliciousFiling;
+            let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
+                &reputation_contract,
+                &Symbol::new(env, "apply_dispute_outcome"),
+                vec![
+                    env,
+                    dispute.initiator.clone().into_val(env),
+                    outcome.into_val(env),
+                ],
+            );
+        }
+
+        // Persist state before emitting events.
+        env.storage()
+            .persistent()
+            .set(&DataKey::LastDisputeClosedAt(dispute.job_id), &env.ledger().timestamp());
+        bump_last_dispute_closed_ttl(env, dispute.job_id);
+
+        env.storage().persistent().set(
+            &DataKey::LastDisputeLedger(dispute.client.clone(), dispute.freelancer.clone()),
+            &env.ledger().timestamp(),
+        );
+        bump_last_dispute_ledger_ttl(env, &dispute.client, &dispute.freelancer);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(dispute_id), &*dispute);
+        bump_dispute_ttl(env, dispute_id);
+
+        // Emit dedicated MaliciousDisputeResolved event.
+        env.events().publish(
+            (symbol_short!("dispute"), Symbol::new(env, "malicious_rslvd")),
+            (dispute_id, dispute.job_id, dispute.initiator.clone()),
+        );
+
+        return Ok(dispute.status.clone());
+    }
+
+    // ── Normal resolution path ────────────────────────────────────────────────
     if dispute.votes_for_client > dispute.votes_for_freelancer
         && dispute.votes_for_client > dispute.votes_for_refund_split
+        && dispute.votes_for_client > dispute.votes_for_malicious
     {
         dispute.status = DisputeStatus::ResolvedForClient;
     } else if dispute.votes_for_freelancer > dispute.votes_for_client
         && dispute.votes_for_freelancer > dispute.votes_for_refund_split
+        && dispute.votes_for_freelancer > dispute.votes_for_malicious
     {
         dispute.status = DisputeStatus::ResolvedForFreelancer;
     } else if dispute.votes_for_refund_split > dispute.votes_for_client
         && dispute.votes_for_refund_split > dispute.votes_for_freelancer
+        && dispute.votes_for_refund_split > dispute.votes_for_malicious
     {
         let avg = dispute.refund_split_sum / dispute.votes_for_refund_split as u64;
         dispute.status = DisputeStatus::RefundSplit(avg as u32);
@@ -1201,6 +1294,7 @@ fn internal_resolve(
                 DisputeResolution::RefundBoth => dispute.initiator.clone(),
                 DisputeResolution::RefundSplit(_) => dispute.initiator.clone(),
                 DisputeResolution::Escalate => unreachable!(),
+                DisputeResolution::MaliciousFiling => unreachable!(),
             };
 
             let slash_bps: u32 = env
@@ -1239,8 +1333,6 @@ fn internal_resolve(
                 ],
             );
 
-            let client = dispute.client.clone();
-            let freelancer = dispute.freelancer.clone();
             env.events().publish(
                 (symbol_short!("dispute"), Symbol::new(env, "reput_slashed")),
                 (dispute.job_id, loser, slash_amount),

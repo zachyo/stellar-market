@@ -242,6 +242,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "votes_for_malicious"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "votes_for_refund_split"
                       },
                       "val": {
@@ -1007,6 +1015,14 @@
                 {
                   "key": {
                     "symbol": "votes_for_freelancer"
+                  },
+                  "val": {
+                    "u32": 0
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "votes_for_malicious"
                   },
                   "val": {
                     "u32": 0
