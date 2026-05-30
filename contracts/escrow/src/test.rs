@@ -2523,6 +2523,74 @@ fn test_release_partial_payment_unauthorized_rejected() {
     assert!(result.is_err()); // Unauthorized (#2)
 }
 
+#[test]
+fn test_execute_proposal_happy_path() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, _, _, _, admin) = setup_test(&env);
+
+    // Pause is a time-locked action (48 hours)
+    let proposal_id = contract.propose_admin_action(&admin, &AdminAction::Pause);
+
+    // Verify it is NOT executed yet
+    assert_eq!(contract.is_paused(), false);
+
+    // Call execute_proposal before time-lock expires, should fail
+    let res = contract.try_execute_proposal(&admin, &proposal_id);
+    assert!(res.is_err()); // ProposalTimeLockActive
+
+    // Advance time past the lock (48 hours = 172800 seconds)
+    env.ledger().with_mut(|l| l.timestamp += 172800 + 1);
+
+    // Execute successfully
+    contract.execute_proposal(&admin, &proposal_id);
+    assert_eq!(contract.is_paused(), true);
+}
+
+#[test]
+fn test_execute_proposal_unauthorized_if_threshold_not_met() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    // Set up with 2 signers and threshold = 2
+    let contract_id = env.register_contract(None, EscrowContract);
+    let contract = EscrowContractClient::new(&env, &contract_id);
+    let admin1 = Address::generate(&env);
+    let admin2 = Address::generate(&env);
+    let signers = vec![&env, admin1.clone(), admin2.clone()];
+    let treasury = Address::generate(&env);
+    contract.initialize(&signers, &2, &treasury, &0, &604800);
+
+    // Pause action proposed by admin1. Only 1 approval (admin1). Threshold is 2.
+    let proposal_id = contract.propose_admin_action(&admin1, &AdminAction::Pause);
+
+    // Advance time past lock (48 hours)
+    env.ledger().with_mut(|l| l.timestamp += 172800 + 1);
+
+    // Try executing with admin2, should fail with Unauthorized because threshold (2) is not met yet
+    let res = contract.try_execute_proposal(&admin2, &proposal_id);
+    assert!(res.is_err()); // Unauthorized (#2)
+}
+
+#[test]
+fn test_execute_proposal_signer_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, _, _, _, admin) = setup_test(&env);
+    let proposal_id = contract.propose_admin_action(&admin, &AdminAction::Pause);
+
+    env.ledger().with_mut(|l| l.timestamp += 172800 + 1);
+
+    let non_signer = Address::generate(&env);
+    let res = contract.try_execute_proposal(&non_signer, &proposal_id);
+    assert!(res.is_err()); // SignerNotFound (#28)
+}
+
 // ── top_up_escrow tests (issue #489) ─────────────────────────────────────────
 
 #[test]
