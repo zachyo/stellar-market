@@ -1,9 +1,7 @@
-#![cfg(test)]
-
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    vec, Env, String,
+    testutils::{Address as _, Events as _, Ledger},
+    vec, Env, String, Symbol, TryFromVal,
 };
 use stellar_market_escrow::EscrowContract;
 
@@ -843,7 +841,7 @@ fn test_get_reputation_with_decay() {
     let token_addr = create_token(&env, &token_admin);
     mint(&env, &token_addr, &token_admin, &reviewer, 100_000_000);
 
-    // Set token in reputation contract to match the job token
+    // Configure the token used for stake transfers via admin action.
     reputation_client.propose_admin_action(&admin, &AdminAction::SetToken(token_addr.clone()));
 
     setup_completed_job(&env, &escrow_id, 1u64, &reviewer, &reviewee, &token_addr);
@@ -1099,10 +1097,12 @@ fn test_decay_uses_timestamp_instead_of_ledger_sequence() {
         &MIN_STAKE,
     );
 
+    // Advance timestamp to 6 months; keep sequence small so entries are not archived.
+    // (The test verifies that decay is driven by timestamp, not ledger sequence.)
     env.ledger().set(soroban_sdk::testutils::LedgerInfo {
         timestamp: ONE_YEAR_IN_SECONDS / 2,
         protocol_version: 20,
-        sequence_number: 5_000_000,
+        sequence_number: 200,
         network_id: [0; 32],
         base_reserve: 10,
         min_temp_entry_ttl: 10,
@@ -1116,6 +1116,7 @@ fn test_decay_uses_timestamp_instead_of_ledger_sequence() {
     assert_eq!(rep.total_weight, expected_weight);
     assert_eq!(rep.total_score, 4 * expected_weight);
 
+    // Same timestamp, very different sequence number — result must be identical.
     env.ledger().set(soroban_sdk::testutils::LedgerInfo {
         timestamp: ONE_YEAR_IN_SECONDS / 2,
         protocol_version: 20,
@@ -1146,7 +1147,7 @@ fn test_get_set_min_stake() {
     // Default min stake
     assert_eq!(reputation_client.get_min_stake(), MIN_STAKE);
 
-    // Update min stake via multi-sig
+    // Update min stake via admin action
     let new_stake = 20_000_000_i128;
     reputation_client.propose_admin_action(&admin, &AdminAction::SetMinStake(new_stake));
     assert_eq!(reputation_client.get_min_stake(), new_stake);
@@ -1468,13 +1469,13 @@ fn test_reputation_multisig_flow() {
     let signers = vec![&env, signer1.clone(), signer2.clone()];
     
     client.initialize(&signers, &2, &0);
-    
-    // Propose pause
+
+    // Propose pause — needs 2-of-2 approval so contract is not yet paused.
     let prop_id = client.propose_admin_action(&signer1, &AdminAction::Pause);
     assert_eq!(prop_id, 1);
     // Not yet executed — still should allow actions
     client.propose_admin_action(&signer1, &AdminAction::Unpause); // sanity check: can propose while active
-    
+
     // Approve — crosses threshold, executes the Pause
     client.approve_admin_action(&signer2, &prop_id);
     // Paused: submitting a noop endorse should now fail
@@ -1504,7 +1505,7 @@ fn test_reputation_slash_stake_multisig() {
     
     // Should be executed immediately (threshold 1)
     let rep = client.get_reputation(&loser);
-    // Since we started with 0, saturating_sub(100) is 0. 
+    // Since we started with 0, saturating_sub(100) is 0.
     // Actually, let's just check the event if we could, but assert_eq(0, 0) is trivial.
     // Let's at least check that it didn't fail.
 }
@@ -1957,4 +1958,182 @@ fn test_last_updated_ledger_advances_on_write() {
 
     let ledger_after = client.get_reputation(&reviewee).last_updated_ledger;
     assert!(ledger_after > ledger_before);
+
+// ── tier_up event tests (Issue #464) ────────────────────────────────────────
+
+// env.events().all() returns Vec<(Address, soroban_sdk::Vec<Val>, Val)>
+// where the Address is the emitting contract. Topics are compared by converting
+// each Val slot back to Symbol via TryFromVal.
+
+fn topics_match(env: &Env, topics: &soroban_sdk::Vec<soroban_sdk::Val>, sym0: Symbol, sym1: Symbol) -> bool {
+    topics.len() == 2
+        && topics
+            .get(0_u32)
+            .and_then(|v| Symbol::try_from_val(env, &v).ok())
+            == Some(sym0)
+        && topics
+            .get(1_u32)
+            .and_then(|v| Symbol::try_from_val(env, &v).ok())
+            == Some(sym1)
+}
+
+fn tier_up_event_count(env: &Env) -> usize {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(_, topics, _)| {
+            topics_match(env, topics, symbol_short!("reput"), symbol_short!("tier_up"))
+        })
+        .count()
+}
+
+fn badge_event_count(env: &Env) -> usize {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(_, topics, _)| {
+            topics_match(env, topics, symbol_short!("reput"), symbol_short!("badge"))
+        })
+        .count()
+}
+
+/// A tier upgrade (None -> Bronze) must emit exactly one tier_up event carrying
+/// the correct reviewee address and old/new tier values.
+#[test]
+fn test_tier_up_event_emitted_on_tier_upgrade() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, EscrowContract);
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+
+    let reviewer = Address::generate(&env);
+    let reviewee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = create_token(&env, &token_admin);
+    mint(&env, &token_addr, &token_admin, &reviewer, 100_000_000);
+
+    setup_completed_job(&env, &escrow_id, 1u64, &reviewer, &reviewee, &token_addr);
+
+    // Rating 2 -> avg 200 -> Bronze (previous tier: None)
+    reputation_client.submit_review(
+        &escrow_id,
+        &reviewer,
+        &reviewee,
+        &1u64,
+        &2u32,
+        &String::from_str(&env, "Good work"),
+        &MIN_STAKE,
+    );
+
+    assert_eq!(tier_up_event_count(&env), 1, "expected exactly one tier_up event");
+
+    // Validate payload: (reviewee, old_tier=None, new_tier=Bronze)
+    let event = env
+        .events()
+        .all()
+        .into_iter()
+        .find(|(_, topics, _)| {
+            topics_match(&env, topics, symbol_short!("reput"), symbol_short!("tier_up"))
+        })
+        .expect("tier_up event not found");
+
+    let (ev_reviewee, ev_old_tier, ev_new_tier): (Address, ReputationTier, ReputationTier) =
+        <(Address, ReputationTier, ReputationTier)>::try_from_val(&env, &event.2).unwrap();
+    assert_eq!(ev_reviewee, reviewee);
+    assert_eq!(ev_old_tier, ReputationTier::None);
+    assert_eq!(ev_new_tier, ReputationTier::Bronze);
+}
+
+/// When a review does not change the reputation tier (user stays in Bronze after
+/// a second Bronze-level review) no additional tier_up event must be emitted.
+#[test]
+fn test_no_tier_up_event_when_tier_unchanged() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, EscrowContract);
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+
+    let reviewer1 = Address::generate(&env);
+    let reviewer2 = Address::generate(&env);
+    let reviewee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = create_token(&env, &token_admin);
+    mint(&env, &token_addr, &token_admin, &reviewer1, 100_000_000);
+    mint(&env, &token_addr, &token_admin, &reviewer2, 100_000_000);
+
+    setup_completed_job(&env, &escrow_id, 1u64, &reviewer1, &reviewee, &token_addr);
+    setup_completed_job(&env, &escrow_id, 2u64, &reviewer2, &reviewee, &token_addr);
+
+    // First review: rating 2 -> avg 200 -> Bronze (tier_up: None -> Bronze)
+    reputation_client.submit_review(
+        &escrow_id,
+        &reviewer1,
+        &reviewee,
+        &1u64,
+        &2u32,
+        &String::from_str(&env, "Decent"),
+        &MIN_STAKE,
+    );
+    assert_eq!(tier_up_event_count(&env), 1);
+
+    // Second review: rating 2 -> avg still 200 -> stays Bronze (no tier change)
+    reputation_client.submit_review(
+        &escrow_id,
+        &reviewer2,
+        &reviewee,
+        &2u64,
+        &2u32,
+        &String::from_str(&env, "Consistent"),
+        &MIN_STAKE,
+    );
+
+    // Total tier_up events must still be exactly 1 (second review added none)
+    assert_eq!(
+        tier_up_event_count(&env),
+        1,
+        "second review must not emit tier_up when tier is unchanged"
+    );
+}
+
+/// The existing badge event must continue to be emitted alongside the new
+/// tier_up event, preserving backward compatibility for badge consumers.
+#[test]
+fn test_badge_event_preserved_alongside_tier_up() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let escrow_id = env.register_contract(None, EscrowContract);
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+
+    let reviewer = Address::generate(&env);
+    let reviewee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_addr = create_token(&env, &token_admin);
+    mint(&env, &token_addr, &token_admin, &reviewer, 100_000_000);
+
+    setup_completed_job(&env, &escrow_id, 1u64, &reviewer, &reviewee, &token_addr);
+
+    // Rating 4 -> avg 400 -> Silver tier
+    reputation_client.submit_review(
+        &escrow_id,
+        &reviewer,
+        &reviewee,
+        &1u64,
+        &4u32,
+        &String::from_str(&env, "Great"),
+        &MIN_STAKE,
+    );
+
+    assert_eq!(badge_event_count(&env), 1, "badge event must still be emitted");
+    assert_eq!(tier_up_event_count(&env), 1, "tier_up event must be emitted alongside badge");
+
+    // Functional sanity: badge is stored and matches expected tier
+    let badges = reputation_client.get_badges(&reviewee);
+    assert_eq!(badges.len(), 1);
+    assert_eq!(badges.get(0).unwrap().badge_type, ReputationTier::Silver);
 }

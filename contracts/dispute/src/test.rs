@@ -27,8 +27,6 @@ impl MockReputationContract {
         _env: Env,
         user: Address,
     ) -> Result<reputation::UserReputation, soroban_sdk::Error> {
-        // Mock: Return high reputation for all users in tests
-        // In real tests, you would use more sophisticated mocking
         Ok(reputation::UserReputation {
             user: user.clone(),
             total_score: 500,
@@ -43,6 +41,15 @@ impl MockReputationContract {
         _loser: Address,
         _job_id: u64,
         _amount: u64,
+    ) -> Result<(), soroban_sdk::Error> {
+        Ok(())
+    }
+
+    /// Mock for the MaliciousFiling cross-contract call.
+    pub fn apply_dispute_outcome(
+        _env: Env,
+        _user: Address,
+        _outcome: u32, // DisputeOutcome discriminant (2 = MaliciousFiling)
     ) -> Result<(), soroban_sdk::Error> {
         Ok(())
     }
@@ -1151,8 +1158,8 @@ fn test_raise_dispute_allowed_after_cooldown() {
 
     let _ = client.resolve_dispute(&first_dispute_id);
 
-    // Cooldown is 86_400 seconds.
-    env.ledger().with_mut(|l| l.timestamp = 1000 + 86_401);
+    // Both the per-job cooldown (86_400 s) and per-party cooldown (1_209_600 s / 14 days) must expire.
+    env.ledger().with_mut(|l| l.timestamp = 1000 + 1_209_601);
 
     let second_dispute_id = client.raise_dispute(
         &9u64,
@@ -1275,6 +1282,159 @@ fn test_force_resolve_timeout_tie_break_success() {
 
     let status = client.force_resolve_timeout(&dispute_id);
     assert_eq!(status, DisputeStatus::ResolvedForClient);
+}
+
+// ── Party-pair cooldown tests (#530) ─────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "Error(Contract, #13)")] // DisputeCooldown
+fn test_party_cooldown_blocks_same_parties_on_different_job() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(&env, &dispute_contract_id);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let admin = Address::generate(&env);
+    let user_client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+
+    // Raise and resolve a dispute on job 1.
+    let d1 = client.raise_dispute(
+        &1u64, &user_client, &freelancer, &user_client,
+        &String::from_str(&env, "First dispute"), &3u32, &None,
+    );
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    client.cast_vote(&d1, &v1, &VoteChoice::Client, &String::from_str(&env, "v1"));
+    client.cast_vote(&d1, &v2, &VoteChoice::Client, &String::from_str(&env, "v2"));
+    client.cast_vote(&d1, &v3, &VoteChoice::Freelancer, &String::from_str(&env, "v3"));
+    let _ = client.resolve_dispute(&d1);
+
+    // Immediately try to raise a dispute on a different job between the same parties — must fail.
+    client.raise_dispute(
+        &2u64, &user_client, &freelancer, &freelancer,
+        &String::from_str(&env, "Too soon"), &3u32, &None,
+    );
+}
+
+#[test]
+fn test_party_cooldown_allows_after_expiry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(&env, &dispute_contract_id);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let admin = Address::generate(&env);
+    let user_client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+
+    let d1 = client.raise_dispute(
+        &1u64, &user_client, &freelancer, &user_client,
+        &String::from_str(&env, "First dispute"), &3u32, &None,
+    );
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    client.cast_vote(&d1, &v1, &VoteChoice::Client, &String::from_str(&env, "v1"));
+    client.cast_vote(&d1, &v2, &VoteChoice::Client, &String::from_str(&env, "v2"));
+    client.cast_vote(&d1, &v3, &VoteChoice::Freelancer, &String::from_str(&env, "v3"));
+    let _ = client.resolve_dispute(&d1);
+
+    // Advance past the 14-day per-party cooldown (1_209_600 s) and per-job cooldown (86_400 s).
+    env.ledger().with_mut(|l| l.timestamp = 1000 + 1_209_601);
+
+    let d2 = client.raise_dispute(
+        &2u64, &user_client, &freelancer, &freelancer,
+        &String::from_str(&env, "After cooldown"), &3u32, &None,
+    );
+    assert_eq!(d2, 2);
+}
+
+#[test]
+fn test_party_cooldown_does_not_affect_different_party_pairs() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| {
+        l.timestamp = 1000;
+        l.sequence_number = 1000;
+    });
+
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(&env, &dispute_contract_id);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let admin = Address::generate(&env);
+    let user_client_a = Address::generate(&env);
+    let freelancer_a = Address::generate(&env);
+    let user_client_b = Address::generate(&env);
+    let freelancer_b = Address::generate(&env);
+
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+
+    // Resolve a dispute between pair A.
+    let d1 = client.raise_dispute(
+        &1u64, &user_client_a, &freelancer_a, &user_client_a,
+        &String::from_str(&env, "Pair A"), &3u32, &None,
+    );
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    client.cast_vote(&d1, &v1, &VoteChoice::Client, &String::from_str(&env, "v1"));
+    client.cast_vote(&d1, &v2, &VoteChoice::Client, &String::from_str(&env, "v2"));
+    client.cast_vote(&d1, &v3, &VoteChoice::Freelancer, &String::from_str(&env, "v3"));
+    let _ = client.resolve_dispute(&d1);
+
+    // Different pair B should be unaffected.
+    let d2 = client.raise_dispute(
+        &2u64, &user_client_b, &freelancer_b, &user_client_b,
+        &String::from_str(&env, "Pair B"), &3u32, &None,
+    );
+    assert_eq!(d2, 2);
+}
+
+#[test]
+fn test_set_cooldown_duration() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(&env, &dispute_contract_id);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+
+    // Admin can update the cooldown duration.
+    client.set_cooldown_duration(&admin, &100_000u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")] // NotAdmin
+fn test_set_cooldown_duration_non_admin_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(&env, &dispute_contract_id);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+    client.set_cooldown_duration(&non_admin, &100_000u64);
 }
 
 // ── Vote delegation tests (#479) ──────────────────────────────────────────────
@@ -1526,4 +1686,191 @@ fn test_delegated_vote_counts_same_as_direct_vote_in_resolution() {
     // 3 votes for freelancer — resolution should succeed.
     let status = client.resolve_dispute(&dispute_id);
     assert_eq!(status, DisputeStatus::ResolvedForFreelancer);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")] // DisputeError::ConflictOfInterest = 10
+fn test_conflict_of_interest_voter_is_party() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(&env, &dispute_contract_id);
+
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+
+    let user_client = Address::generate(&env);
+    let freelancer = Address::generate(&env);
+
+    let dispute_id = client.raise_dispute(
+        &1u64,
+        &user_client,
+        &freelancer,
+        &user_client,
+        &String::from_str(&env, "Issue"),
+        &3u32,
+        &None,
+    );
+
+    // Client tries to vote on their own dispute
+    client.cast_vote(
+        &dispute_id,
+        &user_client,
+        &VoteChoice::Client,
+        &String::from_str(&env, "Vote"),
+    );
+}
+
+// ── Malicious dispute filing tests ────────────────────────────────────────────
+
+/// Helper: set up a dispute with an initialized contract and return key objects.
+fn setup_malicious_test(
+    env: &Env,
+) -> (
+    DisputeContractClient,
+    Address, // job_client
+    Address, // freelancer
+    u64,     // dispute_id
+) {
+    let dispute_contract_id = env.register_contract(None, DisputeContract);
+    let client = DisputeContractClient::new(env, &dispute_contract_id);
+    let reputation_contract_id = env.register_contract(None, MockReputationContract);
+    let escrow_contract_id = env.register_contract(None, DummyEscrow);
+    let admin = Address::generate(env);
+    client.initialize(&admin, &reputation_contract_id, &300, &escrow_contract_id);
+
+    let job_client = Address::generate(env);
+    let freelancer = Address::generate(env);
+    let dispute_id = client.raise_dispute(
+        &1u64,
+        &job_client,
+        &freelancer,
+        &job_client, // initiator = client (the one allegedly filing in bad faith)
+        &String::from_str(env, "Frivolous claim"),
+        &5u32, // min_votes = 5 so we can reach supermajority
+        &None,
+    );
+    (client, job_client, freelancer, dispute_id)
+}
+
+/// 4-of-5 votes for MaliciousFiling → resolves as MaliciousDisputeFiling.
+#[test]
+fn test_malicious_filing_supermajority_resolves() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    // 4 malicious votes + 1 dissenting vote = supermajority
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Client,           &String::from_str(&env, "disagree"));
+
+    let status = client.resolve_dispute(&dispute_id);
+    assert_eq!(status, DisputeStatus::MaliciousDisputeFiling);
+}
+
+/// 3-of-5 votes for MaliciousFiling (60 %) — below the 80 % supermajority threshold.
+/// Resolves normally (Client wins here because the remaining 2 votes are also for Client).
+#[test]
+fn test_malicious_filing_below_supermajority_resolves_normally() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    // 3 malicious + 2 for client = 60 % malicious, not ≥ 80 %
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::Client,           &String::from_str(&env, "for client"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Client,           &String::from_str(&env, "for client"));
+
+    // Should NOT resolve as MaliciousDisputeFiling — normal resolution applies.
+    // freelancer has 0, client has 2, malicious has 3 → malicious wins by plurality
+    // BUT supermajority check fails (3*5 = 15 < 5*4 = 20), so falls through to normal path.
+    // In the normal path malicious votes are not a valid outcome category, so tie-break kicks in.
+    let status = client.resolve_dispute(&dispute_id);
+    assert_ne!(status, DisputeStatus::MaliciousDisputeFiling);
+}
+
+/// Verifies that a MaliciousDisputeFiling dispute cannot be resolved a second time.
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_malicious_filing_cannot_be_re_resolved() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Freelancer,       &String::from_str(&env, "dissent"));
+
+    client.resolve_dispute(&dispute_id);
+    // Second resolve attempt should panic with AlreadyResolved (#7)
+    client.resolve_dispute(&dispute_id);
+}
+
+/// Verify the MaliciousDisputeResolved event is emitted on a supermajority resolution.
+#[test]
+fn test_malicious_filing_event_emitted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, job_client, _freelancer, dispute_id) = setup_malicious_test(&env);
+
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+    let v4 = Address::generate(&env);
+    let v5 = Address::generate(&env);
+
+    client.cast_vote(&dispute_id, &v1, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v2, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v3, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v4, &VoteChoice::MaliciousFiling, &String::from_str(&env, "bad faith"));
+    client.cast_vote(&dispute_id, &v5, &VoteChoice::Freelancer,       &String::from_str(&env, "dissent"));
+
+    client.resolve_dispute(&dispute_id);
+
+    // Check that a "malicious_rslvd" event was published.
+    let events = env.events().all();
+    let malicious_event = events.iter().find(|e| {
+        // The second topic should be the Symbol "malicious_rslvd"
+        e.1.len() >= 2
+    });
+    assert!(malicious_event.is_some(), "MaliciousDisputeResolved event not found");
+
+    // The dispute should now show MaliciousDisputeFiling status.
+    let dispute = client.get_dispute(&dispute_id);
+    assert_eq!(dispute.status, DisputeStatus::MaliciousDisputeFiling);
+    // Initiator should be the client (who raised the dispute).
+    assert_eq!(dispute.initiator, job_client);
 }

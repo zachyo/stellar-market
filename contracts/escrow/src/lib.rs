@@ -123,6 +123,8 @@ pub enum DisputeResolution {
     RefundBoth,
     RefundSplit(u32),
     Escalate,
+    /// Dispute was filed in bad faith; initiator's full stake is sent to treasury.
+    MaliciousFiling,
 }
 
 #[contracttype]
@@ -416,10 +418,10 @@ impl EscrowContract {
             (count, proposer, action),
         );
 
-        // Auto-execute if threshold is 1
+        // Auto-execute if threshold is 1 and time-lock not active
         let threshold: u32 = env.storage().instance().get(&DataKey::MultiSigThreshold).unwrap_or(1);
         if threshold == 1 && now >= execution_not_before {
-            Self::execute_proposal(&env, count)?;
+            Self::execute_proposal_internal(&env, count)?;
         }
 
         Ok(count)
@@ -456,13 +458,28 @@ impl EscrowContract {
 
         let threshold: u32 = env.storage().instance().get(&DataKey::MultiSigThreshold).unwrap_or(1);
         if proposal.approvals.len() >= threshold {
-            Self::execute_proposal(&env, proposal_id)?;
+            let not_before: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::MultiSigExecutionNotBefore(proposal_id))
+                .unwrap_or(proposal.created_at);
+            if env.ledger().timestamp() >= not_before {
+                Self::execute_proposal_internal(&env, proposal_id)?;
+            }
         }
 
         Ok(())
     }
 
-    fn execute_proposal(env: &Env, proposal_id: u64) -> Result<(), EscrowError> {
+    pub fn execute_proposal(env: Env, caller: Address, proposal_id: u64) -> Result<(), EscrowError> {
+        caller.require_auth();
+        if !is_signer(&env, &caller) {
+            return Err(EscrowError::SignerNotFound);
+        }
+        Self::execute_proposal_internal(&env, proposal_id)
+    }
+
+    fn execute_proposal_internal(env: &Env, proposal_id: u64) -> Result<(), EscrowError> {
         let mut proposal: MultiSigProposal = env.storage().instance().get(&DataKey::MultiSigProposal(proposal_id))
             .ok_or(EscrowError::MultiSigProposalNotFound)?;
 
@@ -472,6 +489,11 @@ impl EscrowContract {
 
         if env.ledger().timestamp() > proposal.created_at + PROPOSAL_TTL {
             return Err(EscrowError::ProposalExpired);
+        }
+
+        let threshold: u32 = env.storage().instance().get(&DataKey::MultiSigThreshold).unwrap_or(1);
+        if proposal.approvals.len() < threshold {
+            return Err(EscrowError::Unauthorized);
         }
 
         let not_before: u64 = env
@@ -904,6 +926,20 @@ impl EscrowContract {
                     // No funds transferred; job remains in its current disputed state
                     // until a higher-level resolution process completes.
                 }
+                DisputeResolution::MaliciousFiling => {
+                    // Slash full remaining stake to treasury.
+                    let treasury: Address = env
+                        .storage()
+                        .instance()
+                        .get(&symbol_short!("TRE"))
+                        .unwrap_or(job.client.clone());
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &treasury,
+                        &remaining,
+                    );
+                    job.status = JobStatus::Cancelled;
+                }
             }
         } else {
             // All milestones were already paid out — only the job status needs updating.
@@ -911,7 +947,8 @@ impl EscrowContract {
             match resolution {
                 DisputeResolution::ClientWins
                 | DisputeResolution::RefundBoth
-                | DisputeResolution::RefundSplit(_) => {
+                | DisputeResolution::RefundSplit(_)
+                | DisputeResolution::MaliciousFiling => {
                     job.status = JobStatus::Cancelled;
                 }
                 DisputeResolution::FreelancerWins => {
@@ -1713,9 +1750,11 @@ impl EscrowContract {
     //   Either party → propose_revision()  → stores Pending proposal
     //   Other party  → accept_revision()   → updates job + adjusts escrow
     //   Other party  → reject_revision()   → cancels proposal, no changes
+    //   Proposer     → cancel_revision_proposal() → withdraws own Pending proposal
     //
     // Security invariants:
     //   - Proposer cannot accept or reject their own proposal
+    //   - Proposer can cancel (withdraw) their own Pending proposal
     //   - Only one Pending proposal per job at any time
     //   - All token movements use checked arithmetic
     //   - Escrow balance always reflects the current agreed total
@@ -2039,6 +2078,65 @@ impl EscrowContract {
         // 5. Emit event
         env.events()
             .publish((Symbol::new(&env, "revision_rejected"),), (job_id, caller, job.client, job.freelancer));
+
+        Ok(())
+    }
+
+    /// Cancels a pending revision proposal. Only the original proposer may cancel.
+    ///
+    /// # Authorization
+    /// Callable ONLY by the party who originally proposed the revision.
+    ///
+    /// # Arguments
+    /// * `caller` — The original proposer
+    /// * `job_id` — The job whose proposal is being cancelled
+    ///
+    /// # Behavior
+    /// - Removes the proposal from storage entirely
+    /// - Job milestones, total, and escrow balance remain completely unchanged
+    /// - After cancellation, a new proposal may be submitted by either party
+    ///
+    /// # Errors
+    /// * `RevisionProposalNotFound` — if no proposal exists
+    /// * `ProposalNotPending` — if the proposal is not Pending
+    /// * `NotAuthorizedForProposalAction` — if caller is not the original proposer
+    pub fn cancel_revision_proposal(env: Env, caller: Address, job_id: u64) -> Result<(), EscrowError> {
+        caller.require_auth();
+
+        // 1. Load job
+        let job: Job = env
+            .storage()
+            .persistent()
+            .get(&get_job_key(job_id))
+            .ok_or(EscrowError::JobNotFound)?;
+        bump_job_ttl(&env, job_id);
+
+        // 2. Load and validate proposal
+        let proposal = env
+            .storage()
+            .persistent()
+            .get::<DataKey, RevisionProposal>(&DataKey::RevisionProposal(job_id))
+            .ok_or(EscrowError::RevisionProposalNotFound)?;
+
+        if proposal.status != ProposalStatus::Pending {
+            return Err(EscrowError::ProposalNotPending);
+        }
+
+        // 3. Verify caller is the original proposer
+        if caller != proposal.proposer {
+            return Err(EscrowError::NotAuthorizedForProposalAction);
+        }
+
+        // 4. Remove the proposal from storage — slot is immediately available
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RevisionProposal(job_id));
+
+        // 5. Emit event
+        env.events().publish(
+            (Symbol::new(&env, "revision_cancelled"),),
+            (job_id, caller, job.client, job.freelancer),
+        );
 
         Ok(())
     }
