@@ -169,7 +169,7 @@ router.post("/init-fund", authenticate, walletSourceGuard, asyncHandler(async (r
  * Read the stored exchange-rate parity (TWAP) snapshot for a job, for UI display.
  */
 router.get("/:jobId/rate-snapshot", authenticate, asyncHandler(async (req: AuthRequest, res: Response) => {
-  const { jobId } = req.params;
+  const jobId = req.params.jobId as string;
   const job = await prisma.job.findUnique({
     where: { id: jobId },
     select: { contractJobId: true },
