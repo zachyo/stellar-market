@@ -923,4 +923,31 @@ export class ContractService {
 
     return tx.toXDR();
   }
+
+  /**
+   * Fetches the assigned arbitrators for a dispute from the dispute contract.
+   */
+  static async getOnChainAssignedArbitrators(
+    onChainDisputeId: string
+  ): Promise<string[]> {
+    try {
+      const contract = new Contract(config.stellar.disputeContractId);
+      const native = await this.simulateContractRead(
+        contract.call(
+          "get_assigned_arbitrators",
+          nativeToScVal(BigInt(onChainDisputeId))
+        )
+      );
+      if (Array.isArray(native)) {
+        return native.map((addr: any) => String(addr));
+      }
+      return [];
+    } catch (error) {
+      logger.warn(
+        { err: error, onChainDisputeId },
+        "get_assigned_arbitrators simulation failed",
+      );
+      return [];
+    }
+  }
 }

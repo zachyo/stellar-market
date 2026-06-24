@@ -242,7 +242,7 @@ export interface Dispute {
   respondent: User;
   votes: Vote[];
   evidence?: DisputeEvidence[];
-  arbitrators?: string[];
+  arbitrators?: Array<{ address: string; displayName: string; avatarUrl: string | null }>;
 }
 
 export interface Transaction {
