@@ -62,14 +62,11 @@ export default function SettingsPage() {
   const [email, setEmail] = useState(user?.email ?? "");
   const [bio, setBio] = useState(user?.bio ?? "");
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl ?? "");
-<<<<<<< Updated upstream
   const [role, setRole] = useState<"CLIENT" | "FREELANCER">(
     user?.role === "CLIENT" || user?.role === "FREELANCER" ? user.role : "FREELANCER",
-=======
-  const [role, setRole] = useState<"CLIENT" | "FREELANCER">(user?.role ?? "FREELANCER");
+  );
   const [availabilityStatus, setAvailabilityStatus] = useState<"available" | "busy" | "unavailable">(
     user?.availability === false ? "unavailable" : "available"
->>>>>>> Stashed changes
   );
   const [skills, setSkills] = useState<string[]>(user?.skills ?? []);
   const [newSkill, setNewSkill] = useState("");
@@ -130,15 +127,12 @@ export default function SettingsPage() {
         setRole(data.role ?? "FREELANCER");
         setSkills(data.skills ?? []);
         setTwoFAEnabled(data.twoFactorEnabled ?? false);
-<<<<<<< Updated upstream
+        setAvailabilityStatus(data.availability === false ? "unavailable" : "available");
         updateUser({
           walletAddress: data.walletAddress ?? null,
           email: data.email ?? undefined,
           authMethods: data.authMethods,
         });
-=======
-        setAvailabilityStatus(data.availability === false ? "unavailable" : "available");
->>>>>>> Stashed changes
       } catch {
         if (!user) {
           toast.error("Failed to load profile data.");
@@ -904,6 +898,42 @@ export default function SettingsPage() {
               </div>
             </div>
 
+            {/* Availability Status (freelancers only) */}
+            {role === "FREELANCER" && (
+              <div>
+                <label className="block text-sm font-medium text-theme-heading mb-3">
+                  Availability Status
+                </label>
+                <div className="flex gap-3">
+                  {(["available", "busy", "unavailable"] as const).map((status) => {
+                    const config = {
+                      available: { label: "Available", active: "bg-green-500/20 border-green-500 text-green-600 dark:text-green-400" },
+                      busy: { label: "Busy", active: "bg-amber-400/20 border-amber-400 text-amber-600 dark:text-amber-400" },
+                      unavailable: { label: "Unavailable", active: "bg-gray-400/20 border-gray-400 text-gray-500" },
+                    }[status];
+                    return (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => setAvailabilityStatus(status)}
+                        className={`flex-1 py-3 px-4 rounded-lg border text-sm font-medium transition-colors ${
+                          availabilityStatus === status
+                            ? config.active
+                            : "bg-theme-card border-theme-border text-theme-text hover:border-theme-text"
+                        }`}
+                        aria-pressed={availabilityStatus === status}
+                      >
+                        {config.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-theme-text mt-2">
+                  Clients can see your availability status on your profile and job applications.
+                </p>
+              </div>
+            )}
+
             {/* Submit */}
             <div className="flex justify-end pt-2">
               <button
@@ -989,7 +1019,6 @@ export default function SettingsPage() {
               </div>
             </div>
 
-<<<<<<< Updated upstream
             {recoveryCodesPending && recoveryCodesPending.length > 0 ? (
               <div className="space-y-4 rounded-lg border border-theme-warning/40 bg-theme-warning/10 p-4">
                 <p className="text-theme-warning text-sm font-medium">
@@ -1113,76 +1142,6 @@ export default function SettingsPage() {
                     </button>
                   </div>
                 )}
-=======
-          {/* Availability Status (freelancers only) */}
-          {role === "FREELANCER" && (
-            <div>
-              <label className="block text-sm font-medium text-theme-heading mb-3">
-                Availability Status
-              </label>
-              <div className="flex gap-3">
-                {(["available", "busy", "unavailable"] as const).map((status) => {
-                  const config = {
-                    available: { label: "Available", active: "bg-green-500/20 border-green-500 text-green-600 dark:text-green-400" },
-                    busy: { label: "Busy", active: "bg-amber-400/20 border-amber-400 text-amber-600 dark:text-amber-400" },
-                    unavailable: { label: "Unavailable", active: "bg-gray-400/20 border-gray-400 text-gray-500" },
-                  }[status];
-                  return (
-                    <button
-                      key={status}
-                      type="button"
-                      onClick={() => setAvailabilityStatus(status)}
-                      className={`flex-1 py-3 px-4 rounded-lg border text-sm font-medium transition-colors ${
-                        availabilityStatus === status
-                          ? config.active
-                          : "bg-theme-card border-theme-border text-theme-text hover:border-theme-text"
-                      }`}
-                      aria-pressed={availabilityStatus === status}
-                    >
-                      {config.label}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-theme-text mt-2">
-                Clients can see your availability status on your profile and job applications.
-              </p>
-            </div>
-          )}
-
-          {/* Submit */}
-          <div className="flex justify-end pt-2">
-            <button
-              type="submit"
-              disabled={isSaving}
-              className="btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isSaving ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" />
-                  Saving...
-                </>
-              ) : (
-                "Save Changes"
-              )}
-            </button>
-          </div>
-        </form>
-
-        {/* Security — Two-Factor Authentication */}
-        <div className="card space-y-6 mt-8">
-          <h2 className="text-xl font-semibold text-dark-heading flex items-center gap-2">
-            <ShieldCheck size={20} />
-            Security
-          </h2>
-
-          {twoFAEnabled && !twoFASetupData ? (
-            /* 2FA is ON */
-            <div className="space-y-4">
-              <div className="flex items-center gap-3 p-4 bg-green-900/20 border border-green-700/30 rounded-lg">
-                <ShieldCheck size={20} className="text-green-400" />
-                <p className="text-green-300 text-sm">Two-factor authentication is enabled.</p>
->>>>>>> Stashed changes
               </div>
             ) : twoFASetupData ? (
               <div className="space-y-6">

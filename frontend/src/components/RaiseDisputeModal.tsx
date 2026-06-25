@@ -1,12 +1,7 @@
 "use client";
 
-<<<<<<< Updated upstream
-import { useState, useRef } from "react";
-import { X, AlertCircle, Loader2, Paperclip, Upload } from "lucide-react";
-=======
-import { useState, useEffect } from "react";
-import { X, AlertCircle, Loader2, Info } from "lucide-react";
->>>>>>> Stashed changes
+import { useState, useRef, useEffect } from "react";
+import { X, AlertCircle, Loader2, Paperclip, Upload, Info } from "lucide-react";
 import axios, { AxiosError } from "axios";
 import { useWallet } from "@/context/WalletContext";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
