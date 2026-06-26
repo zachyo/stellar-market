@@ -65,9 +65,8 @@ const step2Schema = z.object({
     .max(20),
 });
 
-type Step1FormValues = z.infer<typeof step1Schema>;
-type Step2FormValues = z.infer<typeof step2Schema>;
-type FormValues = Step1FormValues & Step2FormValues;
+const fullSchema = step1Schema.merge(step2Schema);
+type FormValues = z.infer<typeof fullSchema>;
 
 const STORAGE_KEY = "job-wizard-draft";
 
@@ -96,8 +95,6 @@ export default function JobWizard() {
     }
   }, []);
 
-  const schema = currentStep === 1 ? step1Schema : step2Schema;
-
   const {
     register,
     control,
@@ -108,7 +105,7 @@ export default function JobWizard() {
     setValue,
     getValues,
   } = useForm<FormValues>({
-    resolver: zodResolver(schema),
+    resolver: zodResolver(fullSchema),
     mode: "onBlur",
     defaultValues: (() => {
       const draft =

@@ -127,7 +127,12 @@ const ClientEarningsPage = () => {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="month" />
               <YAxis />
-              <Tooltip formatter={(value: number) => [`${value.toLocaleString()} XLM`, "Spend"]} />
+              <Tooltip
+                formatter={(value: any, _name?: any) => {
+                  const val = Array.isArray(value) ? value[0] : value;
+                  return [`${Number(val ?? 0).toLocaleString()} XLM`, "Spend"];
+                }}
+              />
               <Line type="monotone" dataKey="spend" stroke="#7C3AED" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
@@ -150,12 +155,17 @@ const ClientEarningsPage = () => {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis type="number" />
                 <YAxis type="category" dataKey="displayName" width={120} />
-                <Tooltip formatter={(value: number) => [`${value.toLocaleString()} XLM`, "Total paid"]} />
+                <Tooltip
+                  formatter={(value: any, _name?: any) => {
+                    const val = Array.isArray(value) ? value[0] : value;
+                    return [`${Number(val ?? 0).toLocaleString()} XLM`, "Total paid"];
+                  }}
+                />
                 <Bar
                   dataKey="totalPaid"
                   fill="#2563EB"
                   cursor="pointer"
-                  onClick={(entry: FreelancerBreakdownEntry) => router.push(`/u/${entry.displayName}`)}
+                  onClick={(entry: any) => router.push(`/u/${(entry as FreelancerBreakdownEntry).displayName}`)}
                 />
               </BarChart>
             </ResponsiveContainer>

@@ -8,6 +8,8 @@ const platformMinBudgetXlm =
     ? configuredPlatformMinimum
     : 1;
 
+export const MAX_PAGE_SIZE = 100;
+
 export const config = {
   port: process.env.PORT || 5000,
   jwtSecret: process.env.JWT_SECRET || "default-secret-change-me",

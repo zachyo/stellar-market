@@ -34,7 +34,20 @@ import { requireAdmin } from "./middleware/auth";
 const app = express();
 import { swaggerUi, swaggerSpec } from "./config/swagger";
 const httpServer = createServer(app);
-const prisma = new PrismaClient();
+
+// Pool metrics tracked via middleware (Prisma JS client does not expose pool internals)
+const poolMetrics = { active: 0, waiting: 0, exhaustedCount: 0 };
+
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      // connection_limit should be set in DATABASE_URL query string, e.g.:
+      // postgresql://user:pass@host/db?connection_limit=10&pool_timeout=10
+      // We honour the env var as-is; the pool_metrics middleware tracks exhaustion.
+      url: process.env.DATABASE_URL,
+    },
+  },
+});
 
 prisma.$use(async (params, next) => {
   if (params.model === "Job") {
@@ -48,6 +61,26 @@ prisma.$use(async (params, next) => {
     }
   }
   return next(params);
+});
+
+// Detect Prisma connection-pool exhaustion (P2024) and alert
+prisma.$use(async (params, next) => {
+  poolMetrics.active += 1;
+  try {
+    const result = await next(params);
+    return result;
+  } catch (err: any) {
+    if (err?.code === "P2024") {
+      poolMetrics.exhaustedCount += 1;
+      logger.error(
+        { err, model: params.model, action: params.action },
+        "Connection pool exhausted — consider increasing connection_limit in DATABASE_URL",
+      );
+    }
+    throw err;
+  } finally {
+    poolMetrics.active -= 1;
+  }
 });
 
 installRequestIdConsolePatch();
@@ -94,6 +127,17 @@ app.get("/health", async (_req, res) => {
     ? 503
     : 200;
   res.status(httpStatus).json(health);
+});
+
+// Metrics endpoint — exposes pool stats and process counters
+app.get("/metrics", (_req, res) => {
+  res.json({
+    db_pool_size: poolMetrics.active,
+    db_pool_waiting: poolMetrics.waiting,
+    db_pool_exhausted_total: poolMetrics.exhaustedCount,
+    process_uptime_seconds: Math.floor(process.uptime()),
+    process_memory_rss_bytes: process.memoryUsage().rss,
+  });
 });
 
 // Database-only health probe (used by some platforms/LB checks)

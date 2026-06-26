@@ -148,7 +148,9 @@ export default function ArbitratorVoteView({
     );
   }
 
-  const isResolved = dispute.status === "RESOLVED";
+  const isResolved =
+    dispute.status === "RESOLVED_CLIENT" ||
+    dispute.status === "RESOLVED_FREELANCER";
 
   // Full arbitrator panel
   return (

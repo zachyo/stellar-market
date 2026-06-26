@@ -27,6 +27,7 @@ import {
   ContractService,
   RevisionProposalView,
 } from "../services/contract.service";
+import { MAX_PAGE_SIZE } from "../config";
 
 const router = Router();
 
@@ -402,6 +403,7 @@ router.get(
     });
 
     res.set("X-Cache-Hit", hit.toString());
+    res.setHeader("X-Max-Page-Size", String(MAX_PAGE_SIZE));
     res.json(data);
   }),
 );
@@ -439,6 +441,7 @@ router.get(
     const totalPages = Math.ceil(total / safeLimit);
     const hasNext = safePage < totalPages;
 
+    res.setHeader("X-Max-Page-Size", String(MAX_PAGE_SIZE));
     res.json({
       data: jobs,
       pagination: {
