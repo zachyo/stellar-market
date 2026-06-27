@@ -19,6 +19,7 @@ Accessible: dropdown traps focus and closes on Escape
 #740 Freelancer profile page has no 'Request to Hire' CTA when viewed by a client — conversion path is missing
 Repo Avatar
 stellarmarket-labs/stellar-market
+
 Problem
 A client browsing a freelancer profile has no direct action to initiate hiring. The profile page is read-only with no CTA. Clients must navigate away to job posting and manually enter the freelancer details, creating unnecessary friction and drop-off.
 
